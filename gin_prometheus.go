@@ -1,9 +1,6 @@
 package ginprom
 
 import (
-	"bufio"
-	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -91,10 +88,8 @@ func InstrumentHandlerFuncWithOpts(opts prometheus.SummaryOpts, handlerFunc gin.
 	return func(c *gin.Context) {
 		now := time.Now()
 
-		w := c.Writer
 		r := c.Request
 
-		delegate := &responseWriterDelegator{ResponseWriter: w}
 		out := make(chan int)
 		urlLen := 0
 		if r.URL != nil {
@@ -102,26 +97,15 @@ func InstrumentHandlerFuncWithOpts(opts prometheus.SummaryOpts, handlerFunc gin.
 		}
 		go computeApproximateRequestSize(r, out, urlLen)
 
-		_, cn := w.(http.CloseNotifier)
-		_, fl := w.(http.Flusher)
-		_, hj := w.(http.Hijacker)
-		_, rf := w.(io.ReaderFrom)
-		var rw gin.ResponseWriter
-		if cn && fl && hj && rf {
-			rw = &fancyResponseWriterDelegator{delegate}
-		} else {
-			rw = delegate
-		}
-		c.Writer = rw
 		handlerFunc(c)
 
 		elapsed := float64(time.Since(now)) / float64(time.Microsecond)
 
 		method := sanitizeMethod(r.Method)
-		code := sanitizeCode(delegate.status)
+		code := sanitizeCode(c.Writer.Status())
 		regReqCnt.WithLabelValues(method, code).Inc()
 		regReqDur.Observe(elapsed)
-		regResSz.Observe(float64(delegate.written))
+		regResSz.Observe(float64(c.Writer.Size()))
 		regReqSz.Observe(float64(<-out))
 	}
 }
@@ -143,55 +127,6 @@ func computeApproximateRequestSize(r *http.Request, out chan int, s int) {
 		s += int(r.ContentLength)
 	}
 	out <- s
-}
-
-type responseWriterDelegator struct {
-	gin.ResponseWriter
-
-	handler, method string
-	status          int
-	written         int64
-	wroteHeader     bool
-}
-
-func (r *responseWriterDelegator) WriteHeader(code int) {
-	r.status = code
-	r.wroteHeader = true
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *responseWriterDelegator) Write(b []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	n, err := r.ResponseWriter.Write(b)
-	r.written += int64(n)
-	return n, err
-}
-
-type fancyResponseWriterDelegator struct {
-	*responseWriterDelegator
-}
-
-func (f *fancyResponseWriterDelegator) CloseNotify() <-chan bool {
-	return f.ResponseWriter.(http.CloseNotifier).CloseNotify()
-}
-
-func (f *fancyResponseWriterDelegator) Flush() {
-	f.ResponseWriter.(http.Flusher).Flush()
-}
-
-func (f *fancyResponseWriterDelegator) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return f.ResponseWriter.(http.Hijacker).Hijack()
-}
-
-func (f *fancyResponseWriterDelegator) ReadFrom(r io.Reader) (int64, error) {
-	if !f.wroteHeader {
-		f.WriteHeader(http.StatusOK)
-	}
-	n, err := f.ResponseWriter.(io.ReaderFrom).ReadFrom(r)
-	f.written += n
-	return n, err
 }
 
 func sanitizeMethod(m string) string {
