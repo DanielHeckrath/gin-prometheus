@@ -90,12 +90,11 @@ func InstrumentHandlerFuncWithOpts(opts prometheus.SummaryOpts, handlerFunc gin.
 
 		r := c.Request
 
-		out := make(chan int)
 		urlLen := 0
 		if r.URL != nil {
 			urlLen = len(r.URL.String())
 		}
-		go computeApproximateRequestSize(r, out, urlLen)
+		reqSize := computeApproximateRequestSize(r, urlLen)
 
 		handlerFunc(c)
 
@@ -106,11 +105,11 @@ func InstrumentHandlerFuncWithOpts(opts prometheus.SummaryOpts, handlerFunc gin.
 		regReqCnt.WithLabelValues(method, code).Inc()
 		regReqDur.Observe(elapsed)
 		regResSz.Observe(float64(c.Writer.Size()))
-		regReqSz.Observe(float64(<-out))
+		regReqSz.Observe(float64(reqSize))
 	}
 }
 
-func computeApproximateRequestSize(r *http.Request, out chan int, s int) {
+func computeApproximateRequestSize(r *http.Request, s int) int {
 	s += len(r.Method)
 	s += len(r.Proto)
 	for name, values := range r.Header {
@@ -126,7 +125,7 @@ func computeApproximateRequestSize(r *http.Request, out chan int, s int) {
 	if r.ContentLength != -1 {
 		s += int(r.ContentLength)
 	}
-	out <- s
+	return s
 }
 
 func sanitizeMethod(m string) string {
